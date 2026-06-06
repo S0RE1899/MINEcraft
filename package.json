@@ -1,0 +1,12 @@
+{
+  "name": "proximity-voice-server",
+  "version": "1.0.0",
+  "description": "Proximity voice chat server: Minecraft Bedrock WebSocket bridge + WebRTC signaling for browser clients",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

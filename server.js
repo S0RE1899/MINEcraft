@@ -314,24 +314,17 @@ mcWss.on("connection", (ws, req) => {
     if (client.readyState === client.OPEN) client.send(codeMsg);
   });
 
-  // Send world code back to Minecraft chat so players see it in-game
-  setTimeout(() => {
+  // Send world code back to Minecraft chat (two simple say commands — no JSON escaping issues)
+  function mcCommand(line) {
     try {
       ws.send(JSON.stringify({
-        header: {
-          version: 1,
-          requestId: randomUUID(),
-          messageType: "commandRequest",
-          messagePurpose: "commandRequest",
-        },
-        body: {
-          origin: { type: "player" },
-          commandLine: `tellraw @a {"rawtext":[{"text":"\u00a7a[Voice] World code: \u00a7e${worldCode}\u00a7r\n\u00a77Open: https://minecraft-vdgb.onrender.com"}]}`,
-          version: 1
-        }
+        header: { version: 1, requestId: randomUUID(), messageType: "commandRequest", messagePurpose: "commandRequest" },
+        body: { origin: { type: "player" }, commandLine: line, version: 1 }
       }));
-    } catch(e) { /* connection may have closed */ }
-  }, 500);
+    } catch(e) {}
+  }
+  setTimeout(() => mcCommand(`say [Voice] World code: ${worldCode}`), 600);
+  setTimeout(() => mcCommand(`say Open https://minecraft-vdgb.onrender.com and enter the code`), 900);
 
   ws.on("message", (raw) => {
     let msg;

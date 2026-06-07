@@ -86,6 +86,7 @@ button{width:100%;padding:10px;border:none;border-radius:6px;font-size:.95rem;fo
   <div id="session">
     <h1>&#127897; MC Proximity Voice</h1>
     <p class="sub">Connected as <strong id="whoami"></strong></p>
+    <div id="mypos" style="font-size:.78rem;color:#475569;margin-bottom:6px">MC position: not connected (run /function vc in Minecraft)</div>
     <div id="st">Waiting for other players...</div>
     <div id="peers"></div>
     <div class="row">
@@ -165,6 +166,17 @@ function addAudio(pid,stream){
 function calcVol(positions){
   pos=positions;
   var me=positions[myName];
+  // Show own position so player can confirm MC is connected
+  var posEl=gel("mypos");
+  if(posEl){
+    if(me){
+      posEl.textContent="MC position: "+Math.round(me.x)+", "+Math.round(me.y)+", "+Math.round(me.z);
+      posEl.style.color="#4ade80";
+    } else {
+      posEl.textContent="MC position: not received yet (run /function vc in Minecraft)";
+      posEl.style.color="#f59e0b";
+    }
+  }
   Object.keys(conns).forEach(function(pid){
     var pn=names[pid],pp=pn?positions[pn]:null,v=1;
     if(me&&pp){var dx=me.x-pp.x,dy=me.y-pp.y,dz=me.z-pp.z;v=Math.max(0,1-Math.sqrt(dx*dx+dy*dy+dz*dz)/MAXD);}
@@ -283,14 +295,21 @@ mcWss.on("connection", (ws, req) => {
     if (purpose !== "event") return;
 
     if (eventName === "PlayerTransform") {
-      // body.player = { id, name, position: {x,y,z}, yRot, ... }
+      // Try both known body structures across MC versions
       const p = msg?.body?.player;
-      if (p?.name && p?.position) {
-        playerPositions[p.name] = {
-          x: p.position.x,
-          y: p.position.y,
-          z: p.position.z,
-        };
+      const pos = p?.position || msg?.body?.Position || msg?.body?.position;
+      const name = p?.name || msg?.body?.player?.Name || msg?.body?.name;
+      if (name && pos) {
+        const x = pos.x ?? pos.X;
+        const y = pos.y ?? pos.Y;
+        const z = pos.z ?? pos.Z;
+        if (x != null) {
+          playerPositions[name] = { x, y, z };
+          console.log(`[MC] Position ${name}: ${Math.round(x)}, ${Math.round(y)}, ${Math.round(z)}`);
+        }
+      } else {
+        // Log full body once so we can see the real structure
+        console.log("[MC] PlayerTransform body:", JSON.stringify(msg?.body).slice(0, 300));
       }
 
     } else if (eventName === "PlayerLeft") {

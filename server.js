@@ -90,13 +90,15 @@ button{width:100%;padding:10px;border:none;border-radius:6px;font-size:.95rem;fo
     <p class="sub">Enter your exact Minecraft username. Saved for next time.</p>
     <label>Minecraft username (exact, case-sensitive)</label>
     <input id="uname" placeholder="Steve" autocomplete="off">
+    <label style="margin-top:10px">World code (shown in Minecraft chat after /function vc)</label>
+    <input id="roomcode" placeholder="ABC123" maxlength="6" style="text-transform:uppercase;letter-spacing:2px;font-size:1.1rem" autocomplete="off">
     <button id="connectBtn">Connect</button>
     <p class="forget" id="forget" style="display:none">change username</p>
   </div>
   <div id="session">
     <h1>&#127897; MC Proximity Voice</h1>
     <p class="sub">Connected as <strong id="whoami"></strong></p>
-    <div id="worldcode" style="font-size:.85rem;font-weight:600;color:#f59e0b;margin-bottom:4px">World: run /function vc in Minecraft</div>
+    <div id="worldcode" style="font-size:.85rem;font-weight:600;color:#f59e0b;margin-bottom:4px">World: open site first, then run /function vc in Minecraft</div>
     <div id="mypos" style="font-size:.75rem;color:#475569;margin-bottom:8px">Your position: unknown</div>
     <div id="st">Waiting for other players...</div>
     <div id="peers"></div>
@@ -122,7 +124,7 @@ gel("connectBtn").addEventListener("click",function(){
   var n=gel("uname").value.trim();
   if(!n){alert("Enter your Minecraft username");return;}
   localStorage.setItem("vc_name",n);
-  go(n);
+  var rc=(gel("roomcode")?gel("roomcode").value.trim().toUpperCase():"");go(name,rc||null);2
 });
 gel("uname").addEventListener("keydown",function(e){if(e.key==="Enter")gel("connectBtn").click();});
 gel("forget").addEventListener("click",function(){localStorage.removeItem("vc_name");location.reload();});
@@ -136,12 +138,13 @@ gel("muteBtn").addEventListener("click",function(){
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o));}
 function setst(t){gel("st").textContent=t;}
-function go(name){
+function go(name,roomOverride){
   myName=name;myId=uid();
+  if(roomOverride)ROOM=roomOverride.toUpperCase();
   actx=new(window.AudioContext||window.webkitAudioContext)();
   gel("connectBtn").disabled=true;gel("connectBtn").textContent="Connecting...";
   ws=new WebSocket(WS_URL);
-  ws.onmessage=function(e){try{handle(JSON.parse(e.data));}catch(x){console.error(x);}};
+  ws.onmessage=function(e){try{handle(JSON.parse(e.data));}catch(x){console.error(x);};};
   ws.onclose=function(){ws=null;cleanup();show("setup");setst("Disconnected.");};
   ws.onerror=function(){setst("Error - server may be waking up, wait 30s and refresh.");};
   ws.onopen=function(){
@@ -238,22 +241,15 @@ async function handle(msg){
       var wcode=msg.code;
       var wcEl=gel("worldcode");
       if(wcode){
-        if(wcEl){wcEl.textContent="World code: "+wcode;wcEl.style.color="#4ade80";}
-        // Auto-switch to this world's room
-        if(ROOM!==wcode){
-          ROOM=wcode;
-          if(ws&&myId){send({type:"leave"});cleanup();send({type:"join",room:ROOM,id:myId,username:myName});}
-          setst("Joined world "+wcode);
-        }
+        if(wcEl){wcEl.textContent="\u{1F30D} World code: "+wcode;wcEl.style.color="#4ade80";wcEl.style.fontSize="1.1rem";}
+        setst("MC connected — world "+wcode+". Others: join the same room!");
       } else {
         if(wcEl){wcEl.textContent="World: run /function vc in Minecraft";wcEl.style.color="#f59e0b";}
       }
       break;
     }  }}catch(e){console.error(e);}
 }
-<\/script>
-</body>
-</html>`;
+<\/script>\n</body>\n</html>`;
 
 // ── HTTP server ───────────────────────────────────────────────────────────
 
@@ -330,7 +326,7 @@ mcWss.on("connection", (ws, req) => {
         },
         body: {
           origin: { type: "player" },
-          commandLine: `tellraw @a {"rawtext":[{"text":"\u00a7a[Voice] World code: \u00a7e${worldCode}\u00a7r\n\u00a77Go to \u00a7bhttps://minecraft-vdgb.onrender.com\u00a77 \u2014 it auto-joins your world!"}]}`,
+          commandLine: `tellraw @a {"rawtext":[{"text":"\u00a7a[Voice] World code: \u00a7e${worldCode}\u00a7r\n\u00a77Open: https://minecraft-vdgb.onrender.com"}]}`,
           version: 1
         }
       }));
@@ -350,7 +346,7 @@ mcWss.on("connection", (ws, req) => {
       // Try both known body structures across MC versions
       const p = msg?.body?.player;
       const pos = p?.position || msg?.body?.Position || msg?.body?.position;
-      const name = p?.name || msg?.body?.player?.Name || msg?.body?.name;
+      const name = p?.name || p?.Name || msg?.body?.player?.Name || msg?.body?.name || msg?.body?.Name;
       if (name && pos) {
         const x = pos.x ?? pos.X;
         const y = pos.y ?? pos.Y;
@@ -365,7 +361,7 @@ mcWss.on("connection", (ws, req) => {
       }
 
     } else if (eventName === "PlayerLeft") {
-      const name = msg?.body?.player?.name;
+      const name = msg?.body?.player?.name || msg?.body?.player?.Name;
       if (name) {
         console.log(`[MC] Player left: ${name}`);
         delete playerPositions[name];

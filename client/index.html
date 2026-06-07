@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MC Proximity Voice Chat</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .card {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 12px;
+      padding: 28px 32px;
+      width: 100%;
+      max-width: 480px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      color: #4ade80;
+      margin-bottom: 6px;
+    }
+
+    .subtitle {
+      font-size: 0.82rem;
+      color: #94a3b8;
+      margin-bottom: 24px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.82rem;
+      color: #94a3b8;
+      margin-bottom: 4px;
+    }
+
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      background: #0f3460;
+      border: 1px solid #1e4d8c;
+      border-radius: 6px;
+      color: #e0e0e0;
+      padding: 8px 10px;
+      font-size: 0.9rem;
+      margin-bottom: 14px;
+      outline: none;
+    }
+
+    input:focus { border-color: #4ade80; }
+
+    .row { display: flex; gap: 12px; }
+    .row > div { flex: 1; }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:active { opacity: 0.7; }
+
+    #joinBtn  { background: #4ade80; color: #0f2018; margin-top: 6px; }
+    #muteBtn  { background: #f59e0b; color: #1a0e00; flex: 1; }
+    #leaveBtn { background: #ef4444; color: #fff; flex: 1; }
+
+    .btn-row { display: flex; gap: 10px; margin-top: 6px; }
+
+    #status {
+      font-size: 0.82rem;
+      color: #94a3b8;
+      margin: 14px 0 10px;
+      min-height: 18px;
+    }
+
+    #peerList {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .peer-item {
+      background: #0f3460;
+      border-radius: 8px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .peer-name { font-weight: 600; font-size: 0.9rem; }
+
+    .peer-meta {
+      font-size: 0.78rem;
+      color: #94a3b8;
+      text-align: right;
+    }
+
+    .vol-bar-bg {
+      width: 80px;
+      height: 6px;
+      background: #1e4d8c;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .vol-bar {
+      height: 100%;
+      background: #4ade80;
+      border-radius: 3px;
+      transition: width 0.2s;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4ade80;
+      flex-shrink: 0;
+    }
+    .dot.silent { background: #475569; }
+
+    #setup  { display: block; }
+    #chat   { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- ── Setup screen ─────────────────────────────────────────────── -->
+<div class="card">
+  <div id="setup">
+    <h1>🎙 MC Proximity Voice</h1>
+    <p class="subtitle">Enter your Minecraft username once — saved for next time.</p>
+
+    <label>Your Minecraft username (exact, case-sensitive)</label>
+    <input type="text" id="username" placeholder="Steve" autocomplete="off">
+
+    <button id="joinBtn">Connect</button>
+  </div>
+
+  <!-- ── In-session screen ─────────────────────────────────────── -->
+  <div id="chat">
+    <h1>🎙 MC Proximity Voice</h1>
+    <p class="subtitle">Connected as <strong id="myNameDisplay"></strong></p>
+
+    <div id="status">Waiting for players…</div>
+    <div id="peerList"></div>
+
+    <div class="btn-row">
+      <button id="muteBtn">Mute Mic</button>
+      <button id="leaveBtn">Leave</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+var STUN_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+];
+
+// Room and distance come from URL params set by .vc connect in Minecraft
+var params   = new URLSearchParams(location.search);
+var ROOM     = params.get("room") || "minecraft";
+var MAX_DIST = parseInt(params.get("dist")) || 50;
+var SERVER_WS = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host;
+
+var ws = null, myId = null, myUsername = "";
+var localStream = null, micEnabled = true, audioCtx = null;
+var peerConns = {}, peerGains = {}, peerNames = {}, peerVolumes = {}, latestPositions = {};
+
+var setupEl       = document.getElementById("setup");
+var chatEl        = document.getElementById("chat");
+var statusEl      = document.getElementById("status");
+var peerListEl    = document.getElementById("peerList");
+var myNameDisplay = document.getElementById("myNameDisplay");
+var muteBtn       = document.getElementById("muteBtn");
+var leaveBtn      = document.getElementById("leaveBtn");
+var joinBtn       = document.getElementById("joinBtn");
+var usernameInput = document.getElementById("username");
+
+// Pre-fill username from localStorage
+var savedName = localStorage.getItem("mc_vc_username") || "";
+if (savedName) usernameInput.value = savedName;
+
+// Auto-connect on page load if username is already saved
+if (savedName) {
+  window.addEventListener("load", function() { startConnect(savedName); });
+}
+
+joinBtn.addEventListener("click", function() {
+  var name = usernameInput.value.trim();
+  if (!name) { alert("Enter your Minecraft username."); return; }
+  localStorage.setItem("mc_vc_username", name);
+  startConnect(name);
+});
+
+usernameInput.addEventListener("keydown", function(e) {
+  if (e.key === "Enter") joinBtn.click();
+});
+
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function setStatus(text) { statusEl.textContent = text; }
+
+function showChat() {
+  setupEl.style.display = "none";
+  chatEl.style.display  = "block";
+}
+
+function showSetup() {
+  chatEl.style.display  = "none";
+  setupEl.style.display = "block";
+  joinBtn.disabled      = false;
+  joinBtn.textContent   = "Connect";
+  if (muteBtn) { muteBtn.textContent = "Mute Mic"; muteBtn.style.background = "#f59e0b"; }
+  micEnabled = true;
+  peerListEl.innerHTML = "";
+}
+
+async function startConnect(name) {
+  myUsername = name;
+  myId       = generateId();
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  joinBtn.disabled    = true;
+  joinBtn.textContent = "Connecting\u2026";
+
+  try {
+    ws = new WebSocket(SERVER_WS);
+    ws.onmessage = function(e) { try { handleSignal(JSON.parse(e.data)); } catch(err) { console.error(err); } };
+    ws.onclose   = function() { ws = null; cleanupAllPeers(); showSetup(); setStatus("Disconnected \u2014 refresh to reconnect."); };
+    ws.onerror   = function() { setStatus("Connection error \u2014 server may be waking up (~30s), refresh and try again."); };
+
+    await new Promise(function(resolve, reject) {
+      var t = setTimeout(function() { reject(new Error("timeout")); }, 12000);
+      ws.addEventListener("open",  function() { clearTimeout(t); resolve(); }, { once: true });
+      ws.addEventListener("error", function() { clearTimeout(t); reject();   }, { once: true });
+    });
+
+    wsSend({ type: "join", room: ROOM, id: myId, username: myUsername });
+    showChat();
+    myNameDisplay.textContent = myUsername;
+    setStatus("Connected \u00b7 room: " + ROOM + " \u00b7 dist: " + MAX_DIST + " blocks");
+
+  } catch(e) {
+    setStatus("Could not connect \u2014 Render may be starting up, wait 30s and refresh.");
+    joinBtn.disabled    = false;
+    joinBtn.textContent = "Connect";
+    if (ws) { ws.close(); ws = null; }
+  }
+}
+
+// ── Peer list UI ───────────────────────────────────────────────────────────
+
+function renderPeers() {
+  var ids = Object.keys(peerConns);
+  if (!ids.length) { peerListEl.innerHTML = ""; setStatus("No other players in range."); return; }
+  setStatus(ids.length + " player" + (ids.length === 1 ? "" : "s") + " nearby:");
+  peerListEl.innerHTML = "";
+  ids.forEach(function(id) {
+    var vol  = peerVolumes[id] != null ? peerVolumes[id] : 1;
+    var name = peerNames[id] || id;
+    var pct  = Math.round(vol * 100);
+    var myPos   = latestPositions[myUsername];
+    var peerPos = latestPositions[name];
+    var distText = "position unknown";
+    if (myPos && peerPos) {
+      var dx = myPos.x - peerPos.x, dy = myPos.y - peerPos.y, dz = myPos.z - peerPos.z;
+      distText = Math.round(Math.sqrt(dx*dx + dy*dy + dz*dz)) + " blocks away";
+    }
+    var div = document.createElement("div");
+    div.className = "peer-item";
+    div.id = "peer-" + id;
+    div.innerHTML =
+      "<span class=\"dot" + (vol < 0.05 ? " silent" : "") + "\"></span>" +
+      "<span class=\"peer-name\">" + escapeHtml(name) + "</span>" +
+      "<div class=\"peer-meta\"><div>" + escapeHtml(distText) + "</div>" +
+      "<div class=\"vol-bar-bg\"><div class=\"vol-bar\" style=\"width:" + pct + "%\"></div></div></div>";
+    peerListEl.appendChild(div);
+  });
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function updatePeerVolBar(peerId, vol) {
+  peerVolumes[peerId] = vol;
+  var row = document.getElementById("peer-" + peerId);
+  if (!row) return;
+  var bar = row.querySelector(".vol-bar"), dot = row.querySelector(".dot");
+  if (bar) bar.style.width = Math.round(vol * 100) + "%";
+  if (dot) dot.className = "dot" + (vol < 0.05 ? " silent" : "");
+}
+
+// ── Microphone ─────────────────────────────────────────────────────────────
+
+async function acquireMic() {
+  if (localStream) return localStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    localStream.getAudioTracks().forEach(function(t) { t.enabled = micEnabled; });
+  } catch(e) {
+    setStatus("\u26a0 Microphone access denied \u2014 allow mic access in your browser and refresh.");
+    localStream = null;
+  }
+  return localStream;
+}
+
+function attachAudio(peerId, stream) {
+  var source = audioCtx.createMediaStreamSource(stream);
+  var gain   = audioCtx.createGain();
+  gain.gain.value = peerVolumes[peerId] != null ? peerVolumes[peerId] : 1;
+  source.connect(gain);
+  gain.connect(audioCtx.destination);
+  peerGains[peerId] = gain;
+}
+
+function applyProximityVolumes(positions) {
+  latestPositions = positions;
+  var myPos = positions[myUsername];
+  Object.keys(peerConns).forEach(function(peerId) {
+    var peerName = peerNames[peerId];
+    var peerPos  = peerName ? positions[peerName] : null;
+    var vol = 1;
+    if (myPos && peerPos) {
+      var dx = myPos.x - peerPos.x, dy = myPos.y - peerPos.y, dz = myPos.z - peerPos.z;
+      vol = Math.max(0, 1 - Math.sqrt(dx*dx + dy*dy + dz*dz) / MAX_DIST);
+    }
+    var gain = peerGains[peerId];
+    if (gain && audioCtx) gain.gain.linearRampToValueAtTime(vol, audioCtx.currentTime + 0.15);
+    updatePeerVolBar(peerId, vol);
+  });
+  renderPeers();
+}
+
+// ── WebRTC ─────────────────────────────────────────────────────────────────
+
+function createPeerConnection(peerId) {
+  if (peerConns[peerId]) return peerConns[peerId];
+  var pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+  pc.onicecandidate = function(e) { if (e.candidate) wsSend({ type: "ice", to: peerId, candidate: e.candidate }); };
+  pc.ontrack = function(e) { attachAudio(peerId, e.streams[0]); renderPeers(); };
+  pc.onconnectionstatechange = function() {
+    var s = pc.connectionState;
+    if (s === "failed" || s === "closed" || s === "disconnected") { cleanupPeer(peerId); renderPeers(); }
+  };
+  if (localStream) localStream.getTracks().forEach(function(t) { pc.addTrack(t, localStream); });
+  peerConns[peerId] = pc;
+  return pc;
+}
+
+function cleanupPeer(peerId) {
+  if (peerConns[peerId]) { peerConns[peerId].close(); delete peerConns[peerId]; }
+  var gain = peerGains[peerId];
+  if (gain) { gain.disconnect(); delete peerGains[peerId]; }
+  delete peerNames[peerId];
+  delete peerVolumes[peerId];
+}
+
+function cleanupAllPeers() { Object.keys(peerConns).forEach(cleanupPeer); }
+
+async function handleSignal(msg) {
+  try {
+    switch (msg.type) {
+      case "peers": {
+        await acquireMic();
+        if (msg.peerInfo) msg.peerInfo.forEach(function(p) { if (p.username) peerNames[p.id] = p.username; });
+        for (var i = 0; i < (msg.ids || []).length; i++) {
+          var pid = msg.ids[i];
+          var pc  = createPeerConnection(pid);
+          var offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          wsSend({ type: "offer", to: pid, offer: pc.localDescription });
+        }
+        renderPeers(); break;
+      }
+      case "joined": { peerNames[msg.id] = msg.username || msg.id; await acquireMic(); renderPeers(); break; }
+      case "left":   { cleanupPeer(msg.id); renderPeers(); break; }
+      case "offer": {
+        await acquireMic();
+        var pc2 = createPeerConnection(msg.from);
+        await pc2.setRemoteDescription(new RTCSessionDescription(msg.offer));
+        var answer = await pc2.createAnswer();
+        await pc2.setLocalDescription(answer);
+        wsSend({ type: "answer", to: msg.from, answer: pc2.localDescription });
+        break;
+      }
+      case "answer": {
+        var pc3 = peerConns[msg.from];
+        if (pc3 && pc3.signalingState !== "stable")
+          await pc3.setRemoteDescription(new RTCSessionDescription(msg.answer));
+        break;
+      }
+      case "ice": {
+        var pc4 = peerConns[msg.from];
+        if (pc4) await pc4.addIceCandidate(new RTCIceCandidate(msg.candidate));
+        break;
+      }
+      case "positions": { if (msg.players) applyProximityVolumes(msg.players); break; }
+    }
+  } catch(e) { console.error("[Voice] Signal error:", e); }
+}
+
+// ── Controls ───────────────────────────────────────────────────────────────
+
+function leave() {
+  if (ws) { wsSend({ type: "leave" }); ws.close(); ws = null; }
+  cleanupAllPeers();
+  if (localStream) { localStream.getTracks().forEach(function(t) { t.stop(); }); localStream = null; }
+  showSetup();
+}
+
+leaveBtn.addEventListener("click", leave);
+
+muteBtn.addEventListener("click", function() {
+  micEnabled = !micEnabled;
+  if (localStream) localStream.getAudioTracks().forEach(function(t) { t.enabled = micEnabled; });
+  muteBtn.textContent = micEnabled ? "Mute Mic" : "Unmute Mic";
+  muteBtn.style.background = micEnabled ? "#f59e0b" : "#64748b";
+});
+
+// "change username" link
+var forget = document.createElement("p");
+forget.style.cssText = "font-size:0.72rem;color:#4a5568;text-align:center;margin:12px 0 0;cursor:pointer;";
+forget.textContent = "change username";
+forget.onclick = function() { localStorage.removeItem("mc_vc_username"); location.reload(); };
+document.querySelector(".card").appendChild(forget);
+
+// ── State ─────────────────────────────────────────────────────────────────
+
+let ws            = null;
+let myId          = null;
+let myUsername    = "";
+let roomName      = "";
+let maxDistance   = 50;
+let localStream   = null;
+let micEnabled    = true;
+let audioCtx      = null;
+
+/** peerId → RTCPeerConnection */
+const peerConns   = {};
+/** peerId → GainNode (volume control) */
+const peerGains   = {};
+/** peerId → Minecraft username */
+const peerNames   = {};
+/** peerId → last known volume (0–1) */
+const peerVolumes = {};
+
+/** Latest positions broadcast from server: name → { x, y, z } */
+let latestPositions = {};
+
+// ── UI refs ───────────────────────────────────────────────────────────────
+
+const setupEl       = document.getElementById("setup");
+const chatEl        = document.getElementById("chat");
+const statusEl      = document.getElementById("status");
+const peerListEl    = document.getElementById("peerList");
+const myNameDisplay = document.getElementById("myNameDisplay");
+const muteBtn       = document.getElementById("muteBtn");
+const leaveBtn      = document.getElementById("leaveBtn");
+const joinBtn       = document.getElementById("joinBtn");
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function wsSend(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  }
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+// ── Peer list UI ──────────────────────────────────────────────────────────
+
+function renderPeers() {
+  const ids = Object.keys(peerConns);
+  if (ids.length === 0) {
+    peerListEl.innerHTML = "";
+    setStatus("No other players connected.");
+    return;
+  }
+
+  setStatus(`${ids.length} player${ids.length === 1 ? "" : "s"} in voice range:`);
+
+  peerListEl.innerHTML = "";
+  ids.forEach((id) => {
+    const vol  = peerVolumes[id] ?? 1;
+    const name = peerNames[id]   || id;
+    const pct  = Math.round(vol * 100);
+
+    const myPos   = latestPositions[myUsername];
+    const peerPos = latestPositions[name];
+    let distText  = "position unknown";
+    if (myPos && peerPos) {
+      const dx   = myPos.x - peerPos.x;
+      const dy   = myPos.y - peerPos.y;
+      const dz   = myPos.z - peerPos.z;
+      const dist = Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz));
+      distText   = `${dist} blocks away`;
+    }
+
+    const div = document.createElement("div");
+    div.className = "peer-item";
+    div.id = `peer-${id}`;
+    div.innerHTML = `
+      <span class="dot ${vol < 0.05 ? "silent" : ""}"></span>
+      <span class="peer-name">${escapeHtml(name)}</span>
+      <div class="peer-meta">
+        <div>${escapeHtml(distText)}</div>
+        <div class="vol-bar-bg"><div class="vol-bar" style="width:${pct}%"></div></div>
+      </div>`;
+    peerListEl.appendChild(div);
+  });
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function updatePeerVolBar(peerId, vol) {
+  peerVolumes[peerId] = vol;
+  const row = document.getElementById(`peer-${peerId}`);
+  if (!row) return;
+  const bar = row.querySelector(".vol-bar");
+  const dot = row.querySelector(".dot");
+  if (bar) bar.style.width = Math.round(vol * 100) + "%";
+  if (dot) dot.className = "dot" + (vol < 0.05 ? " silent" : "");
+}
+
+// ── Microphone ────────────────────────────────────────────────────────────
+
+async function acquireMic() {
+  if (localStream) return localStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    localStream.getAudioTracks().forEach((t) => { t.enabled = micEnabled; });
+  } catch (e) {
+    console.error("[Voice] Mic access denied:", e);
+    setStatus("⚠ Microphone access denied.");
+    localStream = null;
+  }
+  return localStream;
+}
+
+// ── AudioContext + GainNode per peer ──────────────────────────────────────
+
+function getOrCreateAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  return audioCtx;
+}
+
+function attachAudio(peerId, stream) {
+  const ctx    = getOrCreateAudioCtx();
+  const source = ctx.createMediaStreamSource(stream);
+  const gain   = ctx.createGain();
+  gain.gain.value = peerVolumes[peerId] ?? 1;
+  source.connect(gain);
+  gain.connect(ctx.destination);
+  peerGains[peerId] = gain;
+}
+
+// ── Proximity volume calculation ──────────────────────────────────────────
+
+function applyProximityVolumes(positions) {
+  latestPositions = positions;
+  const myPos = positions[myUsername];
+
+  Object.keys(peerConns).forEach((peerId) => {
+    const peerName = peerNames[peerId];
+    const peerPos  = peerName ? positions[peerName] : null;
+
+    let vol = 1; // full volume if positions not available
+    if (myPos && peerPos) {
+      const dx   = myPos.x - peerPos.x;
+      const dy   = myPos.y - peerPos.y;
+      const dz   = myPos.z - peerPos.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      vol = Math.max(0, 1 - dist / maxDistance);
+    }
+
+    const gain = peerGains[peerId];
+    if (gain) {
+      // Smooth ramp over 150 ms to avoid clicks
+      gain.gain.linearRampToValueAtTime(vol, audioCtx.currentTime + 0.15);
+    }
+    updatePeerVolBar(peerId, vol);
+  });
+
+  renderPeers();
+}
+
+// ── WebRTC peer management ────────────────────────────────────────────────
+
+function createPeerConnection(peerId) {
+  if (peerConns[peerId]) return peerConns[peerId];
+
+  const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      wsSend({ type: "ice", to: peerId, candidate: e.candidate });
+    }
+  };
+
+  pc.ontrack = (e) => {
+    attachAudio(peerId, e.streams[0]);
+    renderPeers();
+  };
+
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    if (s === "failed" || s === "closed" || s === "disconnected") {
+      cleanupPeer(peerId);
+      renderPeers();
+    }
+  };
+
+  // Add local tracks so the remote peer hears us
+  if (localStream) {
+    localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+  }
+
+  peerConns[peerId] = pc;
+  return pc;
+}
+
+function cleanupPeer(peerId) {
+  peerConns[peerId]?.close();
+  delete peerConns[peerId];
+
+  const gain = peerGains[peerId];
+  if (gain) { gain.disconnect(); delete peerGains[peerId]; }
+  delete peerNames[peerId];
+  delete peerVolumes[peerId];
+}
+
+function cleanupAllPeers() {
+  Object.keys(peerConns).forEach(cleanupPeer);
+}
+
+// ── Signaling message handler ─────────────────────────────────────────────
+
+async function handleSignal(msg) {
+  try {
+    switch (msg.type) {
+
+      // Server tells us who's already in the room — we initiate to each
+      case "peers": {
+        await acquireMic();
+        if (msg.peerInfo) {
+          msg.peerInfo.forEach(({ id, username }) => {
+            if (username) peerNames[id] = username;
+          });
+        }
+        for (const peerId of (msg.ids || [])) {
+          const pc     = createPeerConnection(peerId);
+          const offer  = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          wsSend({ type: "offer", to: peerId, offer: pc.localDescription });
+        }
+        renderPeers();
+        break;
+      }
+
+      // A new peer joined — record their username, they'll offer us
+      case "joined": {
+        peerNames[msg.id] = msg.username || msg.id;
+        // Make sure we have a peer connection ready (will be used when offer arrives)
+        await acquireMic();
+        renderPeers();
+        break;
+      }
+
+      // A peer disconnected
+      case "left": {
+        cleanupPeer(msg.id);
+        renderPeers();
+        break;
+      }
+
+      // Peer sent us an offer — answer it
+      case "offer": {
+        await acquireMic();
+        const pc = createPeerConnection(msg.from);
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        wsSend({ type: "answer", to: msg.from, answer: pc.localDescription });
+        break;
+      }
+
+      // Peer accepted our offer
+      case "answer": {
+        const pc = peerConns[msg.from];
+        if (pc && pc.signalingState !== "stable") {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
+        }
+        break;
+      }
+
+      // ICE candidate from a peer
+      case "ice": {
+        const pc = peerConns[msg.from];
+        if (pc) {
+          await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+        }
+        break;
+      }
+
+      // Position broadcast from server (every ~250 ms)
+      case "positions": {
+        if (msg.players) applyProximityVolumes(msg.players);
+        break;
+      }
+    }
+  } catch (e) {
+    console.error("[Voice] Signal error:", e);
+  }
+}
+
+// ── Join / Leave ──────────────────────────────────────────────────────────
+
+joinBtn.addEventListener("click", async () => {
+  const username = document.getElementById("username").value.trim();
+  const serverUrl = document.getElementById("serverUrl").value.trim();
+  roomName    = document.getElementById("roomName").value.trim() || "minecraft";
+  maxDistance = Number(document.getElementById("maxDist").value) || 50;
+
+  if (!username) { alert("Enter your Minecraft username first."); return; }
+  if (!serverUrl) { alert("Enter the voice server URL."); return; }
+
+  myUsername = username;
+  myId       = generateId();
+
+  // AudioContext must be created on user gesture
+  getOrCreateAudioCtx();
+
+  joinBtn.disabled = true;
+  joinBtn.textContent = "Connecting…";
+
+  try {
+    ws = new WebSocket(serverUrl);
+
+    ws.onmessage = (e) => {
+      try { handleSignal(JSON.parse(e.data)); } catch (err) {
+        console.error("[Voice] Parse error:", err);
+      }
+    };
+
+    ws.onclose = () => {
+      ws = null;
+      cleanupAllPeers();
+      showSetup();
+      setStatus("Disconnected from server.");
+    };
+
+    ws.onerror = () => setStatus("⚠ WebSocket connection error.");
+
+    // Wait for connection open (max 6 s)
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("timeout")), 6000);
+      ws.addEventListener("open",  () => { clearTimeout(t); resolve(); }, { once: true });
+      ws.addEventListener("error", () => { clearTimeout(t); reject(new Error("error")); }, { once: true });
+    });
+
+    // Enter room
+    wsSend({ type: "join", room: roomName, id: myId, username: myUsername });
+
+    showChat();
+    myNameDisplay.textContent = myUsername;
+    setStatus("Connected — waiting for other players…");
+
+  } catch (e) {
+    console.error("[Voice] Connect failed:", e);
+    setStatus("⚠ Could not connect to voice server. Is it running?");
+    joinBtn.disabled = false;
+    joinBtn.textContent = "Join Voice Chat";
+    if (ws) { ws.close(); ws = null; }
+  }
+});
+
+function leave() {
+  if (ws) {
+    wsSend({ type: "leave" });
+    ws.close();
+    ws = null;
+  }
+  cleanupAllPeers();
+  if (localStream) {
+    localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+  }
+  showSetup();
+}
+
+leaveBtn.addEventListener("click", leave);
+
+muteBtn.addEventListener("click", () => {
+  micEnabled = !micEnabled;
+  if (localStream) {
+    localStream.getAudioTracks().forEach((t) => { t.enabled = micEnabled; });
+  }
+  muteBtn.textContent = micEnabled ? "Mute Mic" : "Unmute Mic";
+  muteBtn.style.background = micEnabled ? "#f59e0b" : "#64748b";
+});
+
+// ── Screen transitions ────────────────────────────────────────────────────
+
+function showChat() {
+  setupEl.style.display = "none";
+  chatEl.style.display  = "block";
+}
+
+function showSetup() {
+  chatEl.style.display  = "none";
+  setupEl.style.display = "block";
+  joinBtn.disabled      = false;
+  joinBtn.textContent   = "Join Voice Chat";
+  muteBtn.textContent   = "Mute Mic";
+  muteBtn.style.background = "#f59e0b";
+  micEnabled = true;
+</script>
+</body>
+</html>

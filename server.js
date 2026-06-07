@@ -343,16 +343,10 @@ function showSetup() {
 
 // ── HTTP server ───────────────────────────────────────────────────────────
 
-const path = require("path");
-const fs   = require("fs");
-
 const httpServer = http.createServer((req, res) => {
   if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
-    fs.readFile(path.join(__dirname, "client", "index.html"), (err, data) => {
-      if (err) { res.writeHead(500, { "Content-Type": "text/plain" }); res.end("Server error\n"); return; }
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(data);
-    });
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(CLIENT_HTML);
   } else {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("Proximity Voice Chat Server running.\n");

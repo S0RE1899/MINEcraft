@@ -38,6 +38,16 @@ const rooms = {};
 /** Browser client id → Minecraft username */
 const clientUsername = {};
 
+/** World session code — generated when MC connects, cleared when MC disconnects */
+let worldCode = null;
+
+function genCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let c = "";
+  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
+
 // ── Inlined browser client HTML ───────────────────────────────────────────
 
 const CLIENT_HTML = `<!DOCTYPE html>
@@ -86,7 +96,8 @@ button{width:100%;padding:10px;border:none;border-radius:6px;font-size:.95rem;fo
   <div id="session">
     <h1>&#127897; MC Proximity Voice</h1>
     <p class="sub">Connected as <strong id="whoami"></strong></p>
-    <div id="mypos" style="font-size:.78rem;color:#475569;margin-bottom:6px">MC position: not connected (run /function vc in Minecraft)</div>
+    <div id="worldcode" style="font-size:.85rem;font-weight:600;color:#f59e0b;margin-bottom:4px">World: run /function vc in Minecraft</div>
+    <div id="mypos" style="font-size:.75rem;color:#475569;margin-bottom:8px">Your position: unknown</div>
     <div id="st">Waiting for other players...</div>
     <div id="peers"></div>
     <div class="row">
@@ -223,8 +234,22 @@ async function handle(msg){
     case"offer":await getMic();var pc2=mkPC(msg.from);await pc2.setRemoteDescription(new RTCSessionDescription(msg.offer));var ans=await pc2.createAnswer();await pc2.setLocalDescription(ans);send({type:"answer",to:msg.from,answer:pc2.localDescription});break;
     case"answer":var pc3=conns[msg.from];if(pc3&&pc3.signalingState!=="stable")await pc3.setRemoteDescription(new RTCSessionDescription(msg.answer));break;
     case"ice":var pc4=conns[msg.from];if(pc4)await pc4.addIceCandidate(new RTCIceCandidate(msg.candidate));break;
-    case"positions":if(msg.players)calcVol(msg.players);break;
-  }}catch(e){console.error(e);}
+    case"positions":if(msg.players)calcVol(msg.players);break;    case"world":{
+      var wcode=msg.code;
+      var wcEl=gel("worldcode");
+      if(wcode){
+        if(wcEl){wcEl.textContent="World code: "+wcode;wcEl.style.color="#4ade80";}
+        // Auto-switch to this world's room
+        if(ROOM!==wcode){
+          ROOM=wcode;
+          if(ws&&myId){send({type:"leave"});cleanup();send({type:"join",room:ROOM,id:myId,username:myName});}
+          setst("Joined world "+wcode);
+        }
+      } else {
+        if(wcEl){wcEl.textContent="World: run /function vc in Minecraft";wcEl.style.color="#f59e0b";}
+      }
+      break;
+    }  }}catch(e){console.error(e);}
 }
 <\/script>
 </body>
@@ -285,6 +310,33 @@ mcWss.on("connection", (ws, req) => {
   subscribe("PlayerJoin");
   subscribe("PlayerLeft");
 
+  // Generate world code and broadcast to browser clients
+  worldCode = genCode();
+  console.log(`[MC] World code: ${worldCode}`);
+  const codeMsg = JSON.stringify({ type: "world", code: worldCode });
+  browserWss.clients.forEach((client) => {
+    if (client.readyState === client.OPEN) client.send(codeMsg);
+  });
+
+  // Send world code back to Minecraft chat so players see it in-game
+  setTimeout(() => {
+    try {
+      ws.send(JSON.stringify({
+        header: {
+          version: 1,
+          requestId: randomUUID(),
+          messageType: "commandRequest",
+          messagePurpose: "commandRequest",
+        },
+        body: {
+          origin: { type: "player" },
+          commandLine: `tellraw @a {"rawtext":[{"text":"\u00a7a[Voice] World code: \u00a7e${worldCode}\u00a7r\n\u00a77Go to \u00a7bhttps://minecraft-vdgb.onrender.com\u00a77 \u2014 it auto-joins your world!"}]}`,
+          version: 1
+        }
+      }));
+    } catch(e) { /* connection may have closed */ }
+  }, 500);
+
   ws.on("message", (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -330,6 +382,11 @@ mcWss.on("connection", (ws, req) => {
   ws.on("close", () => {
     console.log("[MC] Minecraft disconnected — clearing all player positions");
     Object.keys(playerPositions).forEach((k) => delete playerPositions[k]);
+    worldCode = null;
+    const offMsg = JSON.stringify({ type: "world", code: null });
+    browserWss.clients.forEach((client) => {
+      if (client.readyState === client.OPEN) client.send(offMsg);
+    });
   });
 
   ws.on("error", (err) => {
@@ -353,6 +410,11 @@ setInterval(() => {
 browserWss.on("connection", (ws, req) => {
   let myRoom = null;
   let myId   = null;
+
+  // If Minecraft is already connected, send the current world code immediately
+  if (worldCode) {
+    setTimeout(() => ws.send(JSON.stringify({ type: "world", code: worldCode })), 100);
+  }
 
   ws.on("message", (raw) => {
     let msg;

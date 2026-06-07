@@ -119,12 +119,11 @@ var conns={},gains={},names={},vols={},pos={};
 function gel(id){return document.getElementById(id);}
 var saved=localStorage.getItem("vc_name")||"";
 if(saved){gel("uname").value=saved;gel("forget").style.display="block";}
-if(saved){window.addEventListener("load",function(){go(saved);});}
 gel("connectBtn").addEventListener("click",function(){
   var n=gel("uname").value.trim();
   if(!n){alert("Enter your Minecraft username");return;}
   localStorage.setItem("vc_name",n);
-  var rc=(gel("roomcode")?gel("roomcode").value.trim().toUpperCase():"");go(name,rc||null);2
+  var rc=(gel("roomcode")?gel("roomcode").value.trim().toUpperCase():"");go(n,rc||null);
 });
 gel("uname").addEventListener("keydown",function(e){if(e.key==="Enter")gel("connectBtn").click();});
 gel("forget").addEventListener("click",function(){localStorage.removeItem("vc_name");location.reload();});
